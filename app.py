@@ -35,7 +35,7 @@ PROTOCOLS = {
     ],
     "Ethernet": [
         ("Preamble + SFD", 64), ("Destination MAC", 48), ("Source MAC", 48),
-        ("Type/Length", 16), ("Data (Payload)", 32), ("FCS", 32),
+        ("Type/Length", 16), ("Data + Padding (46–1500 B)", 64), ("FCS", 32),
     ],
     "MPLS": [
         ("Label Value", 20), ("EXP / QoS", 3),
@@ -122,7 +122,7 @@ FIELD_DEFS = {
     "Destination MAC":                  "48bitová (6 B) MAC adresa cílového zařízení. FF:FF:FF:FF:FF:FF = broadcast.",
     "Source MAC":                       "48bitová (6 B) MAC adresa zdrojového zařízení – toho, které rámec odesílá.",
     "Type/Length":                      "EtherType (≥ 0x0800) identifikuje zapouzdřený protokol (0x0800 = IPv4, 0x86DD = IPv6, 0x8100 = VLAN). Hodnota ≤ 1500 značí délku dat (IEEE 802.3).",
-    "Data (Payload)":                   "Datová část rámce (46–1500 bajtů). Pokud jsou data kratší než 46 B, přidá se padding na minimální délku.",
+    "Data + Padding (46–1500 B)":        "Vlastní nesená informace. Délka musí být 46–1500 bajtů. Pokud je přenášených dat méně než 46 B, doplní se výplní (Padding), aby byla dodržena minimální velikost rámce pro správnou detekci kolizí. V diagramu zobrazeno symbolicky jako 64 b (2 řádky).",
     "FCS":                              "Frame Check Sequence – 32bitový CRC kontrolní součet celého rámce. Příjemce jej přepočítá; neshoda = rámec zahozen.",
     # MPLS
     "Label Value":                      "20bitový label identifikující LSP (Label Switched Path). Směrovače rozhodují pouze podle labelu, ne podle IP adresy – velmi rychlé přeposílání.",
@@ -246,6 +246,19 @@ PORT_DESC = {
 }
 
 CUSTOM_PORTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_ports.json")
+
+# Protokoly kreslené lineárně v bajtech místo bitové mřížky 32b/řádek.
+# Trojice: (název_pole, zobrazované_bajty, volitelný_popisek_velikosti)
+LINEAR_BYTES = {
+    "Ethernet": [
+        ("Preamble + SFD",              8),
+        ("Destination MAC",             6),
+        ("Source MAC",                  6),
+        ("Type/Length",                 2),
+        ("Data + Padding (46–1500 B)", 14, "46–1500 B"),
+        ("FCS",                         4),
+    ]
+}
 
 # ── Konstanty vzhledu ──────────────────────────────────────────────────────────
 CW        = 640    # šířka schématu v px
@@ -423,7 +436,10 @@ class App:
             return
 
         fields = PROTOCOLS[name]
-        self._draw_schema(fields)
+        if name in LINEAR_BYTES:
+            self._draw_schema_linear(fields, LINEAR_BYTES[name])
+        else:
+            self._draw_schema(fields)
         self._draw_tray(self._build_tray_items(fields))
         self._refresh_progress()
         self._resize_window()
@@ -497,6 +513,61 @@ class App:
         # Nastav scroll region na celou výšku schématu
         rows_used = row + (1 if col > 0 else 0)
         total_h   = RULER_H + rows_used * ROW_H + 8
+        cv.config(scrollregion=(0, 0, CW, total_h))
+        self.sch.config(height=total_h)
+
+    def _draw_schema_linear(self, fields, byte_layout):
+        """Lineární bajtová řada políček (Ethernet-style). Šířka pole ∝ počtu bajtů."""
+        cv = self.sch
+        bits_by_name = {name: bits for name, bits in fields}
+        total_bytes  = sum(e[1] for e in byte_layout)
+        ppb          = CW / total_bytes   # px na zobrazovaný bajt
+
+        # Ruler: offset v bajtech na každé hranici pole
+        cum = 0
+        for entry in byte_layout:
+            x = cum * ppb
+            cv.create_line(x, 0, x, RULER_H, fill="#ccc")
+            cv.create_text(x + 3, RULER_H // 2,
+                           text=f"{cum} B", font=("Segoe UI", 7),
+                           fill="#bbb", anchor="w")
+            cum += entry[1]
+        cv.create_line(CW, 0, CW, RULER_H, fill="#ccc")
+        cv.create_text(CW - 3, RULER_H // 2,
+                       text=f"{cum} B", font=("Segoe UI", 7),
+                       fill="#bbb", anchor="e")
+
+        # Políčka
+        x  = 0
+        y1 = RULER_H
+        y2 = y1 + ROW_H
+        for entry in byte_layout:
+            name       = entry[0]
+            disp_bytes = entry[1]
+            size_label = entry[2] if len(entry) > 2 else f"{disp_bytes} B"
+            w          = disp_bytes * ppb
+            actual_bits = bits_by_name.get(name, disp_bytes * 8)
+
+            r = cv.create_rectangle(x, y1, x + w, y2,
+                                     fill=C_EMPTY, outline="#7a8ab0")
+            t = cv.create_text(x + w / 2, (y1 + y2) / 2,
+                                text="", font=("Segoe UI", 8),
+                                fill=C_ETXT, width=max(w - 6, 1))
+
+            self.targets.append({
+                "rect": r, "txt": t,
+                "field_name":  name,
+                "bits":        actual_bits,
+                "size_label":  size_label,   # zobrazuje se v labelu i popupu
+                "byte_mode":   True,
+                "first":       True,
+                "x": x, "y": y1,
+                "w": w, "h": ROW_H,
+                "placed_tile": None,
+            })
+            x += w
+
+        total_h = RULER_H + ROW_H + 8
         cv.config(scrollregion=(0, 0, CW, total_h))
         self.sch.config(height=total_h)
 
@@ -693,7 +764,11 @@ class App:
         for t in self.targets:
             if t["field_name"] == field_name:
                 t["placed_tile"] = tile
-                label = f"{tile['field_name']}\n{bits} b" if t["first"] else f"↩ {tile['field_name']}"
+                if t["first"]:
+                    size = t["size_label"] if t.get("byte_mode") else f"{bits} b"
+                    label = f"{tile['field_name']}\n{size}"
+                else:
+                    label = f"↩ {tile['field_name']}"
                 self.sch.itemconfig(t["rect"], fill=C_PLACED, outline="#5c7cfa")
                 self.sch.itemconfig(t["txt"], text=label, fill=C_PTXT,
                                     font=("Segoe UI", 8))
@@ -761,10 +836,11 @@ class App:
              and t["y"] <= cy <= t["y"] + t["h"]),
             None)
         if hit:
-            self._field_info_popup(hit["field_name"], hit["bits"], event.x_root, event.y_root)
+            self._field_info_popup(hit["field_name"], hit["bits"], event.x_root, event.y_root,
+                                   size_label=hit.get("size_label"))
 
-    def _field_info_popup(self, field_name, bits, rx, ry):
-        """Zobrazí malé okenko s názvem pole, šířkou v bitech a popisem."""
+    def _field_info_popup(self, field_name, bits, rx, ry, size_label=None):
+        """Zobrazí malé okenko s názvem pole, šířkou a popisem."""
         pop = tk.Toplevel(self.root)
         pop.overrideredirect(True)
         pop.wm_attributes("-topmost", True)
@@ -778,7 +854,7 @@ class App:
         tk.Label(inner, text=field_name, bg="#f7f9ff",
                  font=("Segoe UI", 10, "bold"), fg="#223355",
                  wraplength=320, justify=tk.LEFT).pack(anchor="w")
-        tk.Label(inner, text=f"{bits} bitů", bg="#f7f9ff",
+        tk.Label(inner, text=size_label if size_label else f"{bits} bitů", bg="#f7f9ff",
                  font=("Segoe UI", 8), fg="#5c7cfa").pack(anchor="w")
 
         tk.Frame(inner, height=1, bg="#c0c8d8").pack(fill=tk.X, pady=(4, 5))
@@ -802,19 +878,29 @@ class App:
 
     # ── Akční tlačítka ─────────────────────────────────────────────────────────
     def _check(self):
-        """Spočítá a zobrazí počet špatně obsazených polí (prázdná se nepočítají)."""
-        wrong = sum(1 for t in self.targets
-                    if t["first"]
-                    and t["placed_tile"] is not None
-                    and t["placed_tile"]["field_name"] != t["field_name"])
-        all_n = len({t["field_name"] for t in self.targets})
-        occ_n = len({t["field_name"] for t in self.targets
-                     if t["placed_tile"] is not None})
-        if wrong == 0 and occ_n == all_n:
-            self.lbl_errors.config(text="All correct!")
-            self.lbl_done.config(text="Well done! Header is correctly assembled.")
+        all_n   = len({t["field_name"] for t in self.targets})
+        correct = sum(1 for t in self.targets
+                      if t["first"]
+                      and t["placed_tile"] is not None
+                      and t["placed_tile"]["field_name"] == t["field_name"])
+        wrong   = sum(1 for t in self.targets
+                      if t["first"]
+                      and t["placed_tile"] is not None
+                      and t["placed_tile"]["field_name"] != t["field_name"])
+        missing = all_n - correct - wrong
+
+        if wrong == 0 and missing == 0:
+            self.lbl_errors.config(text=f"Vše správně! ({correct}/{all_n})", fg="#2e7d32")
+            self.lbl_done.config(text="Výborně! Hlavička je správně složená.")
+            self._show_errors()
         else:
-            self.lbl_errors.config(text=f"Errors: {wrong}")
+            parts = []
+            if wrong:
+                parts.append(f"{wrong} špatně umístěn{'á' if wrong == 1 else 'é'}")
+            if missing:
+                parts.append(f"{missing} chybějíc{'í' if missing == 1 else 'í'}")
+            parts.append(f"{correct}/{all_n} správně")
+            self.lbl_errors.config(text="  ·  ".join(parts), fg="#e53935")
             self.lbl_done.config(text="")
 
     def _show_errors(self):
@@ -862,7 +948,11 @@ class App:
             for chunk in self.targets:
                 if chunk["field_name"] == fn:
                     chunk["placed_tile"] = tile
-                    label = f"{fn}\n{bits} b" if chunk["first"] else f"↩ {fn}"
+                    if chunk["first"]:
+                        size  = chunk["size_label"] if chunk.get("byte_mode") else f"{bits} b"
+                        label = f"{fn}\n{size}"
+                    else:
+                        label = f"↩ {fn}"
                     self.sch.itemconfig(chunk["rect"], fill=C_SNAP,  outline="#2e7d32")
                     self.sch.itemconfig(chunk["txt"],  text=label,   fill=C_STXT,
                                         font=("Segoe UI", 8, "bold"))
