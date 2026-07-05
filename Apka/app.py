@@ -37,6 +37,17 @@ PROTOCOLS = {
         ("Preamble + SFD", 64), ("Destination MAC", 48), ("Source MAC", 48),
         ("Type/Length", 16), ("Data + Padding (46–1500 B)", 64), ("FCS", 32),
     ],
+    "Ethernet 802.1Q (VLAN)": [
+        ("Destination MAC",             48),
+        ("Source MAC",                  48),
+        ("TPID",                        16),
+        ("PRI",                          3),
+        ("CFI",                          1),
+        ("VID",                         12),
+        ("Type/Length",                 16),
+        ("Data + Padding (46–1500 B)", 64),
+        ("FCS",                         32),
+    ],
     "MPLS": [
         ("Label Value", 20), ("EXP / QoS", 3),
         ("S – Bottom of Stack", 1), ("TTL", 8),
@@ -124,6 +135,11 @@ FIELD_DEFS = {
     "Type/Length":                      "EtherType (≥ 0x0800) identifikuje zapouzdřený protokol (0x0800 = IPv4, 0x86DD = IPv6, 0x8100 = VLAN). Hodnota ≤ 1500 značí délku dat (IEEE 802.3).",
     "Data + Padding (46–1500 B)":        "Vlastní nesená informace. Délka musí být 46–1500 bajtů. Pokud je přenášených dat méně než 46 B, doplní se výplní (Padding), aby byla dodržena minimální velikost rámce pro správnou detekci kolizí. V diagramu zobrazeno symbolicky jako 64 b (2 řádky).",
     "FCS":                              "Frame Check Sequence – 32bitový CRC kontrolní součet celého rámce. Příjemce jej přepočítá; neshoda = rámec zahozen.",
+    # Ethernet 802.1Q – VLAN tag sub-fields
+    "TPID": "Tag Protocol Identifier – vždy hodnota 0x8100. Přepínač tuto hodnotu detekuje a zpracuje zbytek VLAN tagu. Hodnota 0x8100 je rezervována pro 802.1Q.",
+    "PRI":  "Priority Code Point (PCP) – 3 bity pro označení priority provozu CoS/QoS. Hodnoty 0–7; 7 = nejvyšší (Network Control), 0 = Best Effort. Odpovídá DiffServ na L2.",
+    "CFI":  "Canonical Format Indicator (dnes DEI – Drop Eligible Indicator) – 1 bit. Historicky rozlišoval Ethernet (0) od Token Ringu (1). Dnes v Ethernetu vždy 0; hodnota 1 značí zahazovatelný rámec při přetížení.",
+    "VID":  "VLAN Identifier – 12bitový identifikátor VLAN sítě, rozsah 0–4095. Hodnota 0 = prioritní tag (žádná VLAN), 4095 = rezervováno. Platné uživatelské VLAN jsou 1–4094.",
     # MPLS
     "Label Value":                      "20bitový label identifikující LSP (Label Switched Path). Směrovače rozhodují pouze podle labelu, ne podle IP adresy – velmi rychlé přeposílání.",
     "EXP / QoS":                        "Experimentální bity (dnes Traffic Class). Používají se pro označení priority přenosu (QoS / DiffServ).",
@@ -158,6 +174,22 @@ FIELD_DEFS = {
     "Encrypted Data (Payload)":         "Zašifrovaná datová část – původní protokol (TCP/UDP…) + data aplikace. ESP zajišťuje důvěrnost (na rozdíl od AH).",
     "Padding":                          "Zarovnávací bajty přidané za data, aby délka šifrovaného bloku byla násobkem velikosti bloku šifry.",
     "Pad Length":                       "Počet bajtů paddingu. Příjemce jej použije k odebrání zarovnání po dešifrování.",
+    # HTTP
+    "Status Line":                      "První řádek HTTP odpovědi: verze protokolu (HTTP/1.1), stavový kód (200=OK, 301=přesměrování, 404=nenalezeno, 500=chyba serveru) a textová fráze. Za ním následují hlavičky ve tvaru „Název: hodnota“ oddělené CRLF (\\r\\n) a prázdný řádek, který odděluje hlavičky od těla odpovědi. Na rozdíl od binárních protokolů výše je celá HTTP hlavička čistý text.",
+    "Content-Type":                     "MIME typ a kódování těla odpovědi, např. text/html; charset=utf-8. Prohlížeč podle něj rozhoduje, jak obsah interpretovat. Chybějící nebo špatný Content-Type otevírá prostor pro MIME sniffing – prohlížeč si typ „domyslí“ sám a může omylem spustit nahraný soubor jako HTML/JS.",
+    "Content-Length":                   "Délka těla odpovědi v bajtech. Prohlížeč podle ní pozná, kde odpověď končí (u chunked přenosu se místo toho použije Transfer-Encoding: chunked a toto pole chybí).",
+    "Set-Cookie":                       "Server tímto uloží cookie do prohlížeče klienta (název=hodnota + atributy, odděleno středníkem). Atributy řídí bezpečnost: HttpOnly zakáže přístup k cookie z JavaScriptu (document.cookie) – hlavní obrana proti krádeži session cookie přes XSS. Secure vynutí odeslání cookie jen přes HTTPS. SameSite=Strict/Lax omezí odesílání cookie při požadavcích z jiného webu – ochrana proti CSRF. Expires/Max-Age určuje životnost, Domain/Path rozsah platnosti.",
+    "Content-Security-Policy":          "Hlavní obrana proti XSS na úrovni hlavičky. Definuje, odkud smí stránka načítat a spouštět zdroje – např. script-src 'self' povolí JavaScript jen ze stejné domény a zakáže jak inline <script>, tak skripty vložené útočníkem odjinud. Prohlížeč vše, co politice neodpovídá, zablokuje ještě před spuštěním.",
+    "X-Content-Type-Options":           "Hodnota „nosniff“ zakazuje prohlížeči odhadovat typ obsahu jinak než podle Content-Type. Bez ní může prohlížeč mylně vyhodnotit nahraný soubor (např. obrázek s vloženým skriptem) jako spustitelný HTML/JS, což je jedna z cest k XSS.",
+    "X-Frame-Options":                  "Řídí, zda smí být stránka vložena do <iframe> jiné stránky (DENY = nikdy, SAMEORIGIN = jen ze stejné domény). Chrání proti clickjackingu, kdy útočník přes neviditelný iframe podvrhne uživateli falešné rozhraní nad skutečnou stránkou.",
+    "Strict-Transport-Security":        "HSTS – řekne prohlížeči, aby k doméně po zadanou dobu (max-age v sekundách) přistupoval výhradně přes HTTPS, i kdyby uživatel zadal http://. Brání downgrade útokům a odposlechu (včetně krádeže cookie) na nezašifrovaném spojení.",
+    "Referrer-Policy":                  "Určuje, kolik informací o zdrojové URL (hlavička Referer) prohlížeč pošle při přechodu na jiný web. Např. strict-origin-when-cross-origin pošle cizím doménám jen samotnou doménu, ne celou cestu s citlivými parametry z URL.",
+    # HTTP – distraktory pro hru (reálné hlavičky, ale jinam nepatří)
+    "Cache-Control":                    "Řídí kešování odpovědi v prohlížeči a proxy serverech (např. no-store, max-age=3600, private/public). U citlivých stránek (přihlášení, bankovnictví) se používá no-store, aby se obsah ani cookie neukládaly do mezipaměti.",
+    "ETag":                             "Otisk (hash) aktuální verze zdroje pro validaci cache. Prohlížeč jej pošle zpět v If-None-Match; pokud se obsah nezměnil, server odpoví 304 Not Modified a ušetří přenos dat.",
+    "Vary":                             "Říká cache serverům, podle kterých dalších hlaviček požadavku (např. Accept-Encoding) se má odpověď lišit – aby necachovaly nesprávnou verzi pro jiného klienta.",
+    "Access-Control-Allow-Origin":      "Součást CORS – určuje, které cizí domény smí přes JavaScript (fetch/XHR) číst tuto odpověď. Bez správného nastavení prohlížeč odpověď z cross-origin požadavku zablokuje.",
+    "X-XSS-Protection":                 "Starší hlavička zapínající vestavěný XSS filtr v IE / starém Chrome a Safari. Dnes zastaralá a nedoporučená (Chrome ji odstranil) – moderní obranou proti XSS je Content-Security-Policy, ne tato hlavička.",
 }
 
 # ── Port Quiz: databáze služba → port ─────────────────────────────────────────
@@ -247,6 +279,35 @@ PORT_DESC = {
 
 CUSTOM_PORTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_ports.json")
 
+# ── HTTP: ukázková reálná odpověď (jak ji vidíš v DevTools → Network → Headers) ──
+# Trojice: (klíč do FIELD_DEFS, jméno hlavičky nebo None pro status řádek, hodnota)
+HTTP_RESPONSE_LINES = [
+    ("Status Line",               None,                         "HTTP/1.1 200 OK"),
+    ("Content-Type",              "Content-Type",               "text/html; charset=utf-8"),
+    ("Content-Length",            "Content-Length",              "5423"),
+    ("Set-Cookie",                "Set-Cookie",
+     "session_id=8f14e45fceea167a5a36dedd4bea2543; HttpOnly; Secure; SameSite=Strict"),
+    ("Content-Security-Policy",   "Content-Security-Policy",     "default-src 'self'; script-src 'self'"),
+    ("X-Content-Type-Options",    "X-Content-Type-Options",      "nosniff"),
+    ("X-Frame-Options",           "X-Frame-Options",             "DENY"),
+    ("Strict-Transport-Security", "Strict-Transport-Security",
+     "max-age=31536000; includeSubDomains"),
+    ("Referrer-Policy",           "Referrer-Policy",             "strict-origin-when-cross-origin"),
+]
+
+HTTP_DISTRACTOR_HEADERS = [
+    "Cache-Control", "ETag", "Vary", "Access-Control-Allow-Origin", "X-XSS-Protection",
+]
+
+HTTP_INTRO = (
+    "HTTP odpověď (i požadavek) se skládá ze dvou částí oddělených prázdným řádkem: "
+    "hlavičky (čistý text, každý řádek ve tvaru „Název: hodnota“, zakončený CRLF) a tělo "
+    "(samotný obsah – HTML, JSON, obrázek…). V prohlížeči je najdeš přesně takhle: "
+    "otevři DevTools (F12) → záložka Network → klikni na požadavek → Headers.\n\n"
+    "Klikni na kteroukoli hlavičku vlevo – vysvětlím, k čemu slouží a jak souvisí "
+    "s bezpečností (XSS, krádež cookie, clickjacking…)."
+)
+
 # Protokoly kreslené lineárně v bajtech místo bitové mřížky 32b/řádek.
 # Trojice: (název_pole, zobrazované_bajty, volitelný_popisek_velikosti)
 LINEAR_BYTES = {
@@ -267,6 +328,8 @@ RULER_H   = 20     # výška číselníku bitů nahoře
 BPR       = 32     # bitů na jeden řádek
 TW, TH    = 80, 56 # rozměry dlaždice v zásobníku
 TRAY_H    = TH + 26
+HROW_H    = 34     # výška řádku v HTTP hře
+HNAME_W   = 230    # šířka pole pro název hlavičky v HTTP hře
 
 C_BG      = "#f0f2f8"
 C_EMPTY   = "#dde4f0"  # prázdné pole
@@ -335,6 +398,7 @@ class App:
 
         for p in list(PROTOCOLS) + UNDEFINED:
             self.lb.insert(tk.END, p)
+        self.lb.insert(tk.END, "HTTP")
         self.lb.bind("<<ListboxSelect>>", self._on_select)
 
         tk.Button(left, text="Port Quiz", command=self._show_quiz,
@@ -403,12 +467,19 @@ class App:
         # ── Rám pro port quiz (skrytý při startu) ─────────────────────
         self._build_quiz_ui(right)
 
+        # ── Rám pro HTTP hlavičky (skrytý při startu) ──────────────────
+        self._build_http_ui(right)
+
     # ── Výběr / reset protokolu ────────────────────────────────────────────────
     def _on_select(self, _=None):
         sel = self.lb.curselection()
         if sel:
-            self._show_header()
-            self._load(self.lb.get(sel[0]))
+            name = self.lb.get(sel[0])
+            if name == "HTTP":
+                self._show_http()
+            else:
+                self._show_header()
+                self._load(name)
 
     def _reset(self):
         sel = self.lb.curselection()
@@ -436,7 +507,9 @@ class App:
             return
 
         fields = PROTOCOLS[name]
-        if name in LINEAR_BYTES:
+        if name == "Ethernet 802.1Q (VLAN)":
+            self._draw_schema_vlan(fields)
+        elif name in LINEAR_BYTES:
             self._draw_schema_linear(fields, LINEAR_BYTES[name])
         else:
             self._draw_schema(fields)
@@ -568,6 +641,128 @@ class App:
             x += w
 
         total_h = RULER_H + ROW_H + 8
+        cv.config(scrollregion=(0, 0, CW, total_h))
+        self.sch.config(height=total_h)
+
+    def _draw_schema_vlan(self, fields):
+        """Ethernet 802.1Q – dvouřádkové lineární schéma.
+        Řada 1: hlavní rámec (VLAN Tag jako vizuální placeholder).
+        Řada 2: podpole VLAN tagu v plné šířce, proporcionálně k bitům."""
+        cv = self.sch
+        bits_by_name = {name: bits for name, bits in fields}
+
+        MAIN_LAYOUT = [
+            ("Destination MAC",             6, "6 B"),
+            ("Source MAC",                  6, "6 B"),
+            ("VLAN Tag",                    4, None),
+            ("Type/Length",                 2, "2 B"),
+            ("Data + Padding (46–1500 B)", 14, "46–1500 B"),
+            ("FCS",                         4, "4 B"),
+        ]
+        VLAN_SUBS = [
+            ("TPID", 16, "16 b"),
+            ("PRI",   3,  "3 b"),
+            ("CFI",   1,  "1 b"),
+            ("VID",  12, "12 b"),
+        ]
+
+        total_bytes = sum(e[1] for e in MAIN_LAYOUT)
+        ppb = CW / total_bytes
+
+        # ── Ruler ──────────────────────────────────────────────────────────────
+        cum = 0
+        for entry in MAIN_LAYOUT:
+            xr = cum * ppb
+            cv.create_line(xr, 0, xr, RULER_H, fill="#ccc")
+            cv.create_text(xr + 3, RULER_H // 2,
+                           text=f"{cum} B", font=("Segoe UI", 7),
+                           fill="#bbb", anchor="w")
+            cum += entry[1]
+        cv.create_line(CW, 0, CW, RULER_H, fill="#ccc")
+        cv.create_text(CW - 3, RULER_H // 2,
+                       text=f"{cum} B", font=("Segoe UI", 7),
+                       fill="#bbb", anchor="e")
+
+        # ── Řada 1: hlavní rámec ───────────────────────────────────────────────
+        x  = 0
+        y1 = RULER_H
+        y2 = y1 + ROW_H
+        vlan_x1 = vlan_x2 = 0
+
+        for entry in MAIN_LAYOUT:
+            fname      = entry[0]
+            disp_bytes = entry[1]
+            size_lbl   = entry[2]
+            w          = disp_bytes * ppb
+
+            if fname == "VLAN Tag":
+                vlan_x1, vlan_x2 = x, x + w
+                cv.create_rectangle(x, y1, x + w, y2,
+                                     fill="#eef0ff", outline="#9aa8cc",
+                                     dash=(3, 2))
+                cv.create_text(x + w / 2, (y1 + y2) / 2,
+                                text="VLAN Tag\n4 B",
+                                font=("Segoe UI", 7, "italic"),
+                                fill="#7788bb")
+            else:
+                actual_bits = bits_by_name.get(fname, disp_bytes * 8)
+                r = cv.create_rectangle(x, y1, x + w, y2,
+                                         fill=C_EMPTY, outline="#7a8ab0")
+                t = cv.create_text(x + w / 2, (y1 + y2) / 2,
+                                    text="", font=("Segoe UI", 8),
+                                    fill=C_ETXT, width=max(w - 6, 1))
+                self.targets.append({
+                    "rect": r, "txt": t,
+                    "field_name": fname,
+                    "bits":       actual_bits,
+                    "size_label": size_lbl,
+                    "byte_mode":  True,
+                    "first":      True,
+                    "x": x, "y": y1,
+                    "w": w, "h": ROW_H,
+                    "placed_tile": None,
+                })
+            x += w
+
+        # ── Mezera + "rozpad" konektor ─────────────────────────────────────────
+        GAP    = 24
+        sub_y1 = y2 + GAP
+        sub_y2 = sub_y1 + ROW_H
+
+        cv.create_text(CW // 2, y2 + GAP // 2,
+                       text="↓  VLAN Tag (4 B = 32 b) – breakdown  ↓",
+                       font=("Segoe UI", 7, "italic"), fill="#8899bb")
+        # Rozbíhající se čáry z VLAN Tag boxu dolů na plnou šířku sub-řady
+        cv.create_line(vlan_x1, y2,  0,  sub_y1, fill="#aabbdd", dash=(3, 2))
+        cv.create_line(vlan_x2, y2, CW, sub_y1, fill="#aabbdd", dash=(3, 2))
+
+        # ── Řada 2: VLAN sub-pole v plné šířce (proporcionálně k bitům) ───────
+        sx = 0
+        sub_total_bits = sum(b for _, b, _ in VLAN_SUBS)
+        for i, (sf_name, sf_bits, sf_size) in enumerate(VLAN_SUBS):
+            sw = round(sf_bits / sub_total_bits * CW)
+            if i == len(VLAN_SUBS) - 1:
+                sw = CW - sx   # poslední pole zarovná na přesnou šířku
+
+            r = cv.create_rectangle(sx, sub_y1, sx + sw, sub_y2,
+                                     fill=C_EMPTY, outline="#7a8ab0")
+            t = cv.create_text(sx + sw / 2, (sub_y1 + sub_y2) / 2,
+                                text="", font=("Segoe UI", 8),
+                                fill=C_ETXT, width=max(sw - 6, 1))
+            self.targets.append({
+                "rect": r, "txt": t,
+                "field_name": sf_name,
+                "bits":       sf_bits,
+                "size_label": sf_size,
+                "byte_mode":  True,
+                "first":      True,
+                "x": sx, "y": sub_y1,
+                "w": sw, "h": ROW_H,
+                "placed_tile": None,
+            })
+            sx += sw
+
+        total_h = RULER_H + ROW_H + GAP + ROW_H + 8
         cv.config(scrollregion=(0, 0, CW, total_h))
         self.sch.config(height=total_h)
 
@@ -1067,15 +1262,460 @@ class App:
 
     def _show_quiz(self):
         self._cancel_drag()
+        self._h_cancel_drag()
         self.header_frame.pack_forget()
+        self.http_frame.pack_forget()
         self.quiz_frame.pack(fill=tk.BOTH, expand=True)
         self.quiz_score    = [0, 0]
         self.quiz_streak   = 0
         self._quiz_next()
 
     def _show_header(self):
+        self._h_cancel_drag()
         self.quiz_frame.pack_forget()
+        self.http_frame.pack_forget()
         self.header_frame.pack(fill=tk.BOTH, expand=True)
+
+    def _show_http(self):
+        self._cancel_drag()
+        self.quiz_frame.pack_forget()
+        self.header_frame.pack_forget()
+        self.http_frame.pack(fill=tk.BOTH, expand=True)
+        self._h_show_view()
+
+    # ── HTTP: náhled jako v prohlížeči (výchozí) + volitelné cvičení ───────────
+    def _build_http_ui(self, parent):
+        self.http_frame = tk.Frame(parent, bg=C_BG)
+
+        tk.Label(self.http_frame,
+                 text="HTTP odpověď – přesně jak ji vidíš v prohlížeči (DevTools → Network → Headers)",
+                 bg=C_BG, font=("Segoe UI", 12, "bold"),
+                 wraplength=580, justify=tk.LEFT).pack(anchor="w", padx=4, pady=(2, 6))
+
+        self.http_body = tk.Frame(self.http_frame, bg=C_BG)
+        self.http_body.pack(fill=tk.X, padx=4)
+
+        # ── Podrežim 1: náhled (výchozí, needitovatelný) ───────────────────────
+        self.http_view_frame = tk.Frame(self.http_body, bg=C_BG)
+
+        view_top = tk.Frame(self.http_view_frame, bg=C_BG)
+        view_top.pack(fill=tk.X, pady=(0, 4))
+        tk.Button(view_top, text="✎ Procvičit sestavení hlavičky", command=self._h_show_practice,
+                  bg=C_TILE, fg="white", relief=tk.FLAT, font=("Segoe UI", 9, "bold"),
+                  cursor="hand2", padx=8, pady=4).pack(side=tk.LEFT)
+
+        raw_outer = tk.Frame(self.http_view_frame, bg="#1e1e1e", bd=1, relief=tk.SOLID)
+        raw_outer.pack(fill=tk.X)
+        self.http_raw = tk.Text(raw_outer, height=len(HTTP_RESPONSE_LINES) + 1,
+                                 bg="#1e1e1e", fg="#d4d4d4",
+                                 font=("Consolas", 10), relief=tk.FLAT,
+                                 padx=10, pady=8, wrap="none", cursor="hand2")
+        self.http_raw.pack(fill=tk.X)
+        self.http_raw.tag_config("name",   foreground="#9cdcfe")
+        self.http_raw.tag_config("value",  foreground="#ce9178")
+        self.http_raw.tag_config("status", foreground="#4ec9b0", font=("Consolas", 10, "bold"))
+
+        self.http_line_keys = []
+        for key, hname, value in HTTP_RESPONSE_LINES:
+            if hname is None:
+                self.http_raw.insert(tk.END, value, "status")
+            else:
+                self.http_raw.insert(tk.END, hname + ": ", "name")
+                self.http_raw.insert(tk.END, value, "value")
+            self.http_raw.insert(tk.END, "\n")
+            self.http_line_keys.append(key)
+        self.http_raw.config(state=tk.DISABLED)
+        self.http_raw.bind("<Button-1>", self._on_http_line_click)
+
+        tk.Label(self.http_view_frame, text="Klikni na řádek hlavičky výše ↑ pro vysvětlení",
+                 bg=C_BG, font=("Segoe UI", 9, "italic"), fg="#666").pack(anchor="w", pady=(4, 0))
+
+        # ── Podrežim 2: cvičení (drag & drop sestavení) ────────────────────────
+        self.http_practice_frame = tk.Frame(self.http_body, bg=C_BG)
+
+        prac_top = tk.Frame(self.http_practice_frame, bg=C_BG)
+        prac_top.pack(fill=tk.X, pady=(0, 4))
+        tk.Button(prac_top, text="← Zpět na náhled", command=self._h_show_view,
+                  bg="#e4e8f4", relief=tk.FLAT, font=("Segoe UI", 9),
+                  cursor="hand2", padx=8).pack(side=tk.LEFT)
+        self.lbl_h_errors = tk.Label(prac_top, text="", bg=C_BG,
+                                      font=("Segoe UI", 10), fg="#666")
+        self.lbl_h_errors.pack(side=tk.RIGHT, padx=4)
+        _bkw = dict(bg="#e4e8f4", relief=tk.FLAT, font=("Segoe UI", 9),
+                    cursor="hand2", bd=1, padx=4)
+        tk.Button(prac_top, text="Show Solution", command=self._h_show_solution, **_bkw).pack(side=tk.RIGHT, padx=2)
+        tk.Button(prac_top, text="Show Errors",   command=self._h_show_errors,   **_bkw).pack(side=tk.RIGHT, padx=2)
+        tk.Button(prac_top, text="Check",         command=self._h_check,          **_bkw).pack(side=tk.RIGHT, padx=2)
+        tk.Button(prac_top, text="↺ Reset",       command=self._h_load,           **_bkw).pack(side=tk.RIGHT, padx=2)
+
+        sch_f = tk.Frame(self.http_practice_frame, bg=C_BG)
+        sch_f.pack(fill=tk.X)
+        self.http_sch = tk.Canvas(sch_f, bg="white", width=CW, height=1,
+                                   highlightthickness=1, highlightbackground="#c0c8d8")
+        self.http_sch.pack(side=tk.LEFT)
+        self.http_sch.bind("<Button-1>", self._h_schema_click)
+
+        tk.Frame(self.http_practice_frame, height=2, bg="#c0c8d8").pack(fill=tk.X, pady=(4, 0))
+
+        tk.Label(self.http_practice_frame,
+                 text="Přetáhni dlaždici s názvem hlavičky do prázdného pole. Klikni na řádek pro vysvětlení:",
+                 bg=C_BG, font=("Segoe UI", 9, "italic"), fg="#666").pack(anchor="w", pady=(3, 0))
+
+        tray_f = tk.Frame(self.http_practice_frame, bg="#e8ecf4", relief=tk.SUNKEN, bd=1)
+        tray_f.pack(fill=tk.X)
+        self.http_tray = tk.Canvas(tray_f, bg="#e8ecf4", width=CW, height=1, highlightthickness=0)
+        self.http_tray.pack(anchor="w")
+
+        self.lbl_h_done = tk.Label(self.http_practice_frame, text="", bg=C_BG,
+                                    font=("Segoe UI", 11, "bold"), fg="#4caf50")
+        self.lbl_h_done.pack(pady=2)
+
+        self.http_targets  = []
+        self.http_tiles    = []
+        self.http_drag     = None
+        self.http_drag_win = None
+        self.http_hover    = None
+        self.http_rows     = []   # (y1, y2, field_name) pro všechny řádky včetně status řádku
+
+        # ── Sdílený vysvětlovací panel – viditelný v obou podrežimech ──────────
+        exp_outer = tk.Frame(self.http_frame, bg="white", bd=1, relief=tk.SOLID)
+        exp_outer.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 4))
+        self.lbl_http_title = tk.Label(exp_outer, text="", bg="white",
+                                        font=("Segoe UI", 11, "bold"), fg="#223355",
+                                        anchor="w", justify=tk.LEFT, wraplength=580)
+        self.lbl_http_title.pack(fill=tk.X, padx=12, pady=(10, 4))
+        self.lbl_http_body = tk.Label(exp_outer, text="", bg="white",
+                                       font=("Segoe UI", 10), fg="#334466",
+                                       anchor="nw", justify=tk.LEFT, wraplength=580)
+        self.lbl_http_body.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+
+        self._h_show_view()
+
+    def _h_show_view(self):
+        self._h_cancel_drag()
+        self.http_practice_frame.pack_forget()
+        self.http_view_frame.pack(fill=tk.X)
+        self._show_http_explanation("__intro__")
+
+    def _h_show_practice(self):
+        self.http_view_frame.pack_forget()
+        self.http_practice_frame.pack(fill=tk.X)
+        self._h_load()
+
+    def _on_http_line_click(self, event):
+        index = self.http_raw.index(f"@{event.x},{event.y}")
+        line  = int(index.split(".")[0]) - 1
+        if 0 <= line < len(self.http_line_keys):
+            self._show_http_explanation(self.http_line_keys[line])
+
+    # ── Sestavení / reset hry ───────────────────────────────────────────────────
+    def _h_load(self):
+        self._h_cancel_drag()
+        self.http_sch.delete("all")
+        self.http_tray.delete("all")
+        self.http_targets.clear()
+        self.http_tiles.clear()
+        self.http_rows.clear()
+        self.lbl_h_errors.config(text="")
+        self.lbl_h_done.config(text="")
+        self._show_http_explanation("__intro__")
+
+        y = 0
+        for key, hname, value in HTTP_RESPONSE_LINES:
+            y1, y2 = y, y + HROW_H
+            if hname is None:
+                self.http_sch.create_text(8, (y1 + y2) / 2, anchor="w",
+                                           text=value, font=("Consolas", 10, "bold"),
+                                           fill="#2e7d32")
+                self.http_rows.append((y1, y2, "Status Line"))
+            else:
+                r = self.http_sch.create_rectangle(6, y1 + 4, 6 + HNAME_W, y2 - 4,
+                                                     fill=C_EMPTY, outline="#7a8ab0")
+                t = self.http_sch.create_text(6 + HNAME_W / 2, (y1 + y2) / 2,
+                                               text="", font=("Segoe UI", 8),
+                                               fill=C_ETXT, width=HNAME_W - 6)
+                self.http_sch.create_text(6 + HNAME_W + 10, (y1 + y2) / 2, anchor="w",
+                                           text=f": {value}", font=("Consolas", 10),
+                                           fill="#334466")
+                self.http_targets.append({
+                    "rect": r, "txt": t, "field_name": key,
+                    "x": 6, "y": y1 + 4, "w": HNAME_W, "h": (y2 - 4) - (y1 + 4),
+                    "placed_tile": None,
+                })
+                self.http_rows.append((y1, y2, key))
+            y = y2
+
+        self.http_sch.config(scrollregion=(0, 0, CW, y), height=y)
+
+        names    = [key for key, hname, _ in HTTP_RESPONSE_LINES if hname is not None]
+        distract = random.sample(HTTP_DISTRACTOR_HEADERS, min(5, len(HTTP_DISTRACTOR_HEADERS)))
+        items    = [(n, False) for n in names] + [(n, True) for n in distract]
+        random.shuffle(items)
+        self._h_draw_tray(items)
+        self._h_refresh_progress()
+
+    def _h_draw_tray(self, items):
+        cv, PAD = self.http_tray, 8
+        tiles_per_row = max(1, (CW - PAD) // (TW + PAD))
+        col = row = 0
+        for name, is_distractor in items:
+            x = PAD + col * (TW + PAD)
+            y = PAD + row * (TH + PAD)
+            r = cv.create_rectangle(x, y, x + TW, y + TH,
+                                     fill=C_TILE, outline="#3a5bd0", tags=("tile",))
+            t = cv.create_text(x + TW / 2, y + TH / 2, text=name,
+                                font=("Segoe UI", 7, "bold"), fill=C_TTXT,
+                                width=TW - 10, tags=("tile",))
+            tile = {"rect": r, "txt": t, "field_name": name,
+                    "is_distractor": is_distractor, "placed": False, "placed_group": None}
+            self.http_tiles.append(tile)
+            for item in (r, t):
+                cv.tag_bind(item, "<Button-1>", lambda e, tl=tile: self._h_drag_start(e, tl))
+            col += 1
+            if col >= tiles_per_row:
+                col = 0
+                row += 1
+        n_rows = row + (1 if col > 0 else 0)
+        tray_h = PAD + n_rows * (TH + PAD)
+        cv.config(width=CW, height=tray_h, scrollregion=(0, 0, CW, tray_h))
+
+    # ── Drag & drop (nezávislé na bitovém schématu ostatních protokolů) ────────
+    def _h_cancel_drag(self):
+        if not hasattr(self, "http_drag"):
+            return
+        if self.http_drag_win:
+            self.http_drag_win.destroy()
+            self.http_drag_win = None
+        if self.http_drag:
+            self._h_return_tile(self.http_drag["tile"])
+            try:
+                self.root.unbind("<B1-Motion>",       self.http_drag["motion_id"])
+                self.root.unbind("<ButtonRelease-1>", self.http_drag["release_id"])
+            except Exception:
+                pass
+            self.http_drag = None
+
+    def _h_drag_start(self, event, tile):
+        if tile["placed"] or self.http_drag:
+            return
+        self.http_tray.itemconfig(tile["rect"], fill="#8ea8f8")
+        win = tk.Toplevel(self.root)
+        win.overrideredirect(True)
+        win.wm_attributes("-topmost", True)
+        try:
+            win.wm_attributes("-alpha", 0.88)
+        except Exception:
+            pass
+        self.http_drag_win = win
+        frm = tk.Frame(win, bg=C_TILE, bd=2, relief=tk.RAISED)
+        frm.pack(fill=tk.BOTH, expand=True)
+        tk.Label(frm, text=tile["field_name"], bg=C_TILE, fg=C_TTXT,
+                 font=("Segoe UI", 8, "bold"), wraplength=TW - 8, justify=tk.CENTER).pack(expand=True)
+        win.geometry(f"{TW}x{TH}+{event.x_root - TW//2}+{event.y_root - TH//2}")
+
+        mid = self.root.bind("<B1-Motion>",       self._h_drag_motion,  add="+")
+        rid = self.root.bind("<ButtonRelease-1>", self._h_drag_release, add="+")
+        self.http_drag = {"tile": tile, "motion_id": mid, "release_id": rid}
+
+    def _h_drag_motion(self, event):
+        if not self.http_drag or not self.http_drag_win:
+            return
+        self.http_drag_win.geometry(f"+{event.x_root - TW//2}+{event.y_root - TH//2}")
+        self._h_update_hover(event)
+
+    def _h_drag_release(self, event):
+        if not self.http_drag:
+            return
+        tile     = self.http_drag["tile"]
+        mid, rid = self.http_drag["motion_id"], self.http_drag["release_id"]
+        self._h_clear_hover()
+        if self.http_drag_win:
+            self.http_drag_win.destroy()
+            self.http_drag_win = None
+        try:
+            self.root.unbind("<B1-Motion>",       mid)
+            self.root.unbind("<ButtonRelease-1>", rid)
+        except Exception:
+            pass
+        self.http_drag = None
+
+        cv = self.http_sch
+        sx, sy = cv.winfo_rootx(), cv.winfo_rooty()
+        if (sx <= event.x_root <= sx + cv.winfo_width() and
+                sy <= event.y_root <= sy + cv.winfo_height()):
+            cx = cv.canvasx(event.x_root - sx)
+            cy = cv.canvasy(event.y_root - sy)
+            hit = next((t for t in self.http_targets
+                        if t["x"] <= cx <= t["x"] + t["w"]
+                        and t["y"] <= cy <= t["y"] + t["h"]), None)
+            if hit:
+                self._h_place_tile(tile, hit["field_name"])
+                return
+        self._h_return_tile(tile)
+
+    def _h_clear_hover(self):
+        if self.http_hover:
+            t = self.http_hover
+            if t["placed_tile"] is not None:
+                self.http_sch.itemconfig(t["rect"], fill=C_PLACED, outline="#5c7cfa")
+            else:
+                self.http_sch.itemconfig(t["rect"], fill=C_EMPTY, outline="#7a8ab0")
+            self.http_hover = None
+
+    def _h_update_hover(self, event):
+        cv = self.http_sch
+        sx, sy = cv.winfo_rootx(), cv.winfo_rooty()
+        new_hover = None
+        if (sx <= event.x_root <= sx + cv.winfo_width() and
+                sy <= event.y_root <= sy + cv.winfo_height()):
+            cx = cv.canvasx(event.x_root - sx)
+            cy = cv.canvasy(event.y_root - sy)
+            new_hover = next((t for t in self.http_targets
+                              if t["x"] <= cx <= t["x"] + t["w"]
+                              and t["y"] <= cy <= t["y"] + t["h"]), None)
+        if new_hover is self.http_hover:
+            return
+        self._h_clear_hover()
+        if new_hover:
+            self.http_sch.itemconfig(new_hover["rect"], fill=C_HOVER, outline="#f9a825")
+            self.http_hover = new_hover
+
+    def _h_place_tile(self, tile, field_name):
+        old = next((t["placed_tile"] for t in self.http_targets
+                    if t["field_name"] == field_name and t["placed_tile"] is not None), None)
+        if old is not None and old is not tile:
+            self._h_clear_field(field_name)
+            self._h_return_tile(old)
+        if tile["placed_group"] and tile["placed_group"] != field_name:
+            self._h_clear_field(tile["placed_group"])
+
+        for t in self.http_targets:
+            if t["field_name"] == field_name:
+                t["placed_tile"] = tile
+                self.http_sch.itemconfig(t["rect"], fill=C_PLACED, outline="#5c7cfa")
+                self.http_sch.itemconfig(t["txt"], text=tile["field_name"],
+                                          fill=C_PTXT, font=("Segoe UI", 8))
+
+        tile["placed"]       = True
+        tile["placed_group"] = field_name
+        self.http_tray.itemconfig(tile["rect"], fill=C_DONE, outline="#aaa")
+        self.http_tray.itemconfig(tile["txt"],  fill=C_DTXT)
+        for item in (tile["rect"], tile["txt"]):
+            self.http_tray.tag_unbind(item, "<Button-1>")
+
+        self._h_refresh_progress()
+
+    def _h_clear_field(self, field_name):
+        for t in self.http_targets:
+            if t["field_name"] == field_name:
+                t["placed_tile"] = None
+                self.http_sch.itemconfig(t["rect"], fill=C_EMPTY, outline="#7a8ab0")
+                self.http_sch.itemconfig(t["txt"],  text="", fill=C_ETXT, font=("Segoe UI", 8))
+
+    def _h_return_tile(self, tile):
+        tile["placed"]       = False
+        tile["placed_group"] = None
+        self.http_tray.itemconfig(tile["rect"], fill=C_TILE, outline="#3a5bd0")
+        self.http_tray.itemconfig(tile["txt"],  fill=C_TTXT)
+        for item in (tile["rect"], tile["txt"]):
+            self.http_tray.tag_unbind(item, "<Button-1>")
+            self.http_tray.tag_bind(item, "<Button-1>", lambda e, tl=tile: self._h_drag_start(e, tl))
+
+    # ── Klik na řádek: zvedne položenou dlaždici a vždy ukáže vysvětlení ───────
+    def _h_schema_click(self, event):
+        if self.http_drag:
+            return
+        cy  = self.http_sch.canvasy(event.y)
+        row = next((r for r in self.http_rows if r[0] <= cy <= r[1]), None)
+        if row:
+            self._show_http_explanation(row[2])
+
+        cx  = self.http_sch.canvasx(event.x)
+        hit = next((t for t in self.http_targets
+                    if t["x"] <= cx <= t["x"] + t["w"]
+                    and t["y"] <= cy <= t["y"] + t["h"]
+                    and t["placed_tile"] is not None), None)
+        if hit is None:
+            return
+        tile = hit["placed_tile"]
+        self._h_clear_field(tile["placed_group"])
+        self._h_return_tile(tile)
+        self._h_drag_start(event, tile)
+
+    # ── Akční tlačítka hry ───────────────────────────────────────────────────────
+    def _h_check(self):
+        all_n   = len(self.http_targets)
+        correct = sum(1 for t in self.http_targets
+                      if t["placed_tile"] is not None and t["placed_tile"]["field_name"] == t["field_name"])
+        wrong   = sum(1 for t in self.http_targets
+                      if t["placed_tile"] is not None and t["placed_tile"]["field_name"] != t["field_name"])
+        missing = all_n - correct - wrong
+
+        if wrong == 0 and missing == 0:
+            self.lbl_h_errors.config(text=f"Vše správně! ({correct}/{all_n})", fg="#2e7d32")
+            self.lbl_h_done.config(text="Výborně! Hlavička je správně složená.")
+            self._h_show_errors()
+        else:
+            parts = []
+            if wrong:
+                parts.append(f"{wrong} špatně")
+            if missing:
+                parts.append(f"{missing} chybí")
+            parts.append(f"{correct}/{all_n} správně")
+            self.lbl_h_errors.config(text="  ·  ".join(parts), fg="#e53935")
+            self.lbl_h_done.config(text="")
+
+    def _h_show_errors(self):
+        for t in self.http_targets:
+            if t["placed_tile"] is None:
+                continue
+            if t["placed_tile"]["field_name"] == t["field_name"]:
+                self.http_sch.itemconfig(t["rect"], fill=C_SNAP,  outline="#2e7d32")
+                self.http_sch.itemconfig(t["txt"],  fill=C_STXT,  font=("Segoe UI", 8, "bold"))
+            else:
+                self.http_sch.itemconfig(t["rect"], fill=C_WRONG, outline="#c62828")
+                self.http_sch.itemconfig(t["txt"],  fill=C_WTXT,  font=("Segoe UI", 8, "bold"))
+
+    def _h_show_solution(self):
+        for tile in self.http_tiles:
+            if tile["placed"]:
+                self._h_return_tile(tile)
+        for t in self.http_targets:
+            t["placed_tile"] = None
+            self.http_sch.itemconfig(t["rect"], fill=C_EMPTY, outline="#7a8ab0")
+            self.http_sch.itemconfig(t["txt"],  text="", fill=C_ETXT, font=("Segoe UI", 8))
+
+        for t in self.http_targets:
+            fn   = t["field_name"]
+            tile = next((tl for tl in self.http_tiles
+                         if tl["field_name"] == fn and not tl["is_distractor"]), None)
+            if tile is None:
+                continue
+            t["placed_tile"] = tile
+            self.http_sch.itemconfig(t["rect"], fill=C_SNAP, outline="#2e7d32")
+            self.http_sch.itemconfig(t["txt"],  text=fn, fill=C_STXT, font=("Segoe UI", 8, "bold"))
+            tile["placed"]       = True
+            tile["placed_group"] = fn
+            self.http_tray.itemconfig(tile["rect"], fill=C_DONE, outline="#aaa")
+            self.http_tray.itemconfig(tile["txt"],  fill=C_DTXT)
+            for item in (tile["rect"], tile["txt"]):
+                self.http_tray.tag_unbind(item, "<Button-1>")
+
+        self._h_refresh_progress()
+        self.lbl_h_done.config(text="Tohle je správné řešení.")
+
+    def _h_refresh_progress(self):
+        occ   = sum(1 for t in self.http_targets if t["placed_tile"] is not None)
+        total = len(self.http_targets)
+        self.lbl_h_errors.config(text=f"{occ}/{total} vyplněno" if total else "", fg="#666")
+
+    def _show_http_explanation(self, key):
+        if key == "__intro__":
+            self.lbl_http_title.config(text="Jak funguje HTTP hlavička")
+            self.lbl_http_body.config(text=HTTP_INTRO)
+        else:
+            self.lbl_http_title.config(text=key)
+            self.lbl_http_body.config(text=FIELD_DEFS.get(key, "Popis není k dispozici."))
 
     def _quiz_next(self):
         if not self.quiz_pool:
